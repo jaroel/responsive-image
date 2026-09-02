@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import {
   env,
-  getValueOrCallback,
+  isResponsiveLayout as isResponsiveLayoutCore,
+  resolveClassNames,
+  resolveHeight,
+  resolveSources,
+  resolveSrc,
+  resolveStyles,
+  resolveWidth,
+  sourcesSorted as sortSources,
   type ImageData,
-  type ImageUrlForType,
 } from '@responsive-image/core';
 import { computed, onMounted, ref, shallowRef, useTemplateRef } from 'vue';
 
@@ -37,140 +43,58 @@ defineOptions({
   inheritAttrs: false,
 });
 
-interface ImageSource {
-  srcset: string;
-  type: ImageUrlForType;
-  mimeType: string | undefined;
-  sizes?: string | undefined;
-}
-
-const PIXEL_DENSITIES = [1, 2];
-
-// determines the order of sources, prefereing next-gen formats over legacy
-const typeScore = new Map<ImageUrlForType, number>([
-  ['png', 1],
-  ['jpeg', 1],
-  ['webp', 2],
-  ['avif', 3],
-]);
-
 const loadedSrc = shallowRef<ImageData | undefined>();
 
 const isLoaded = () => loadedSrc.value === args.src;
 
 const isResponsiveLayout = () =>
-  args.width === undefined && args.height === undefined;
+  isResponsiveLayoutCore(args.width, args.height);
 
-const width = () => {
-  if (isResponsiveLayout()) {
-    // With responsive layout, the width attribute does not really matter, as we scale to 100%.
-    // We just need to set width and height with the correct aspect ratio to preven layout shift.
-    return env.deviceWidths.at(-1);
-  } else if (args.width) {
-    return args.width;
-  } else {
-    const ar = args.src.aspectRatio;
-    if (ar !== undefined && ar !== 0 && args.height !== undefined) {
-      return args.height * ar;
-    }
-  }
+const width = () =>
+  resolveWidth({
+    width: args.width,
+    height: args.height,
+    aspectRatio: args.src.aspectRatio,
+    deviceWidths: env.deviceWidths,
+    responsive: isResponsiveLayout(),
+  });
 
-  return undefined;
-};
+const height = () =>
+  resolveHeight({
+    height: args.height,
+    aspectRatio: args.src.aspectRatio,
+    width: width(),
+  });
 
-const height = () => {
-  if (args.height) {
-    return args.height;
-  }
+const src = () => resolveSrc({ src: args.src, width: width() });
 
-  const ar = args.src.aspectRatio;
-  const w = width();
-  if (ar !== undefined && ar !== 0 && w !== undefined) {
-    return Math.round(w / ar);
-  }
+const sources = () =>
+  resolveSources({
+    src: args.src,
+    width: width(),
+    sizes: args.sizes,
+    size: args.size,
+    deviceWidths: env.deviceWidths,
+    responsive: isResponsiveLayout(),
+  });
 
-  return undefined;
-};
+const sourcesSorted = () => sortSources(sources());
 
-const src = () => {
-  const format = args.src.imageTypes === 'auto' ? 'auto' : undefined;
-  return args.src.imageUrlFor(width() ?? 640, format);
-};
+const classNames = () =>
+  resolveClassNames({
+    src: args.src,
+    isLoaded: isLoaded(),
+    responsive: isResponsiveLayout(),
+    customClass: undefined,
+  });
 
-const sources = (): ImageSource[] => {
-  const imageTypes = Array.isArray(args.src.imageTypes)
-    ? args.src.imageTypes
-    : [args.src.imageTypes];
-
-  if (isResponsiveLayout()) {
-    return imageTypes.map((type) => {
-      let widths = args.src.availableWidths;
-      if (!widths) {
-        widths = env.deviceWidths;
-      }
-      const sources: string[] = widths.map((width) => {
-        const url = args.src.imageUrlFor(width, type);
-        return `${url} ${width}w`;
-      });
-
-      return {
-        srcset: sources.join(', '),
-        sizes: args.sizes ?? (args.size ? `${args.size}vw` : undefined),
-        type,
-        mimeType: type === 'auto' ? undefined : `image/${type}`,
-      };
-    });
-  } else {
-    const w = width();
-    if (w === undefined) {
-      return [];
-    } else {
-      return imageTypes.map((type) => {
-        const sources: string[] = PIXEL_DENSITIES.map((density) => {
-          const url = args.src.imageUrlFor(w * density, type)!;
-
-          return `${url} ${density}x`;
-        }).filter((source) => source !== undefined);
-
-        return {
-          srcset: sources.join(', '),
-          type,
-          mimeType: type === 'auto' ? undefined : `image/${type}`,
-        };
-      });
-    }
-  }
-};
-
-const sourcesSorted = () =>
-  sources().sort(
-    (a, b) => (typeScore.get(b.type) ?? 0) - (typeScore.get(a.type) ?? 0),
-  );
-
-const classNames = () => {
-  const classNames = [
-    'ri-img',
-    `ri-${isResponsiveLayout() ? 'responsive' : 'fixed'}`,
-  ];
-  const lqipClass = args.src.lqip?.class;
-  if (lqipClass && !isLoaded()) {
-    classNames.push(getValueOrCallback(lqipClass));
-  }
-
-  return classNames;
-};
-
-const styles = computed(() => {
-  if (
-    isLoaded() ||
-    mounted.value === false ||
-    typeof document === 'undefined'
-  ) {
-    return undefined;
-  }
-
-  return getValueOrCallback(args.src.lqip?.inlineStyles);
-});
+const styles = computed(() =>
+  resolveStyles(
+    args.src,
+    isLoaded(),
+    !mounted.value || typeof document === 'undefined',
+  ),
+);
 
 let keyCounter = 0;
 const keyMap = new WeakMap<ImageData, number>();

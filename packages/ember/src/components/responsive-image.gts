@@ -3,12 +3,22 @@ import { on } from '@ember/modifier';
 import { action } from '@ember/object';
 import Component from '@glimmer/component';
 import { cached, tracked } from '@glimmer/tracking';
-import { env, getValueOrCallback } from '@responsive-image/core';
+import {
+  env,
+  isResponsiveLayout,
+  resolveClassNames,
+  resolveSources,
+  resolveSrc,
+  resolveStyles,
+  resolveWidth,
+  sourcesSorted as sortSources,
+  type ImageSource,
+} from '@responsive-image/core';
 import { modifier } from 'ember-modifier';
 import style from 'ember-style-modifier';
 
 import type Owner from '@ember/owner';
-import type { ImageData, ImageUrlForType } from '@responsive-image/core';
+import type { ImageData } from '@responsive-image/core';
 
 import './responsive-image.css';
 
@@ -22,28 +32,6 @@ export interface ResponsiveImageComponentSignature {
     height?: number;
   };
 }
-
-interface ImageSource {
-  srcset: string;
-  type: ImageUrlForType;
-  mimeType: string | undefined;
-  sizes?: string;
-}
-
-enum Layout {
-  RESPONSIVE = 'responsive',
-  FIXED = 'fixed',
-}
-
-const PIXEL_DENSITIES = [1, 2];
-
-// determines the order of sources, prefereing next-gen formats over legacy
-const typeScore = new Map<ImageUrlForType, number>([
-  ['png', 1],
-  ['jpeg', 1],
-  ['webp', 2],
-  ['avif', 3],
-]);
 
 export default class ResponsiveImageComponent extends Component<ResponsiveImageComponentSignature> {
   @tracked
@@ -66,63 +54,23 @@ export default class ResponsiveImageComponent extends Component<ResponsiveImageC
     return this.args.src.imageTypes === 'auto';
   }
 
-  get layout(): Layout {
-    return this.args.width === undefined && this.args.height === undefined
-      ? Layout.RESPONSIVE
-      : Layout.FIXED;
+  get responsive(): boolean {
+    return isResponsiveLayout(this.args.width, this.args.height);
   }
 
   get sources(): ImageSource[] {
-    const imageTypes = Array.isArray(this.args.src.imageTypes)
-      ? this.args.src.imageTypes
-      : [this.args.src.imageTypes];
-
-    if (this.layout === Layout.RESPONSIVE) {
-      return imageTypes.map((type) => {
-        let widths = this.args.src.availableWidths;
-        if (!widths) {
-          widths = env.deviceWidths;
-        }
-        const sources: string[] = widths.map((width) => {
-          const url = this.args.src.imageUrlFor(width, type);
-          return `${url} ${width}w`;
-        });
-
-        return {
-          srcset: sources.join(', '),
-          sizes:
-            this.args.sizes ??
-            (this.args.size ? `${this.args.size}vw` : undefined),
-          type,
-          mimeType: type != 'auto' ? `image/${type}` : undefined,
-        };
-      });
-    } else {
-      const width = this.width;
-      if (width === undefined) {
-        return [];
-      }
-
-      return imageTypes.map((type) => {
-        const sources: string[] = PIXEL_DENSITIES.map((density) => {
-          const url = this.args.src.imageUrlFor(width * density, type)!;
-
-          return `${url} ${density}x`;
-        }).filter((source) => source !== undefined);
-
-        return {
-          srcset: sources.join(', '),
-          type,
-          mimeType: type != 'auto' ? `image/${type}` : undefined,
-        };
-      });
-    }
+    return resolveSources({
+      src: this.args.src,
+      width: this.width,
+      sizes: this.args.sizes,
+      size: this.args.size,
+      deviceWidths: env.deviceWidths,
+      responsive: this.responsive,
+    });
   }
 
   get sourcesSorted(): ImageSource[] {
-    return this.sources.sort(
-      (a, b) => (typeScore.get(b.type) ?? 0) - (typeScore.get(a.type) ?? 0),
-    );
+    return sortSources(this.sources);
   }
 
   get imgSrcset(): string | undefined {
@@ -133,28 +81,18 @@ export default class ResponsiveImageComponent extends Component<ResponsiveImageC
    * the image source which fits at best for the size and screen
    */
   get src(): string | undefined {
-    const format = this.args.src.imageTypes === 'auto' ? 'auto' : undefined;
-    return this.args.src.imageUrlFor(this.width ?? 640, format);
+    return resolveSrc({ src: this.args.src, width: this.width });
   }
 
   @cached
   get width(): number | undefined {
-    if (this.layout === Layout.RESPONSIVE) {
-      // With responsive layout, the width attribute does not really matter, as we scale to 100%.
-      // We just need to set width and height with the correct aspect ratio to preven layout shift.
-      return env.deviceWidths.at(-1);
-    } else {
-      if (this.args.width) {
-        return this.args.width;
-      }
-
-      const ar = this.args.src.aspectRatio;
-      if (ar !== undefined && ar !== 0 && this.args.height !== undefined) {
-        return this.args.height * ar;
-      }
-
-      return undefined;
-    }
+    return resolveWidth({
+      width: this.args.width,
+      height: this.args.height,
+      aspectRatio: this.args.src.aspectRatio,
+      deviceWidths: env.deviceWidths,
+      responsive: this.responsive,
+    });
   }
 
   get height(): number | undefined {
@@ -171,19 +109,16 @@ export default class ResponsiveImageComponent extends Component<ResponsiveImageC
   }
 
   get classNames(): string {
-    const classNames = ['ri-img', `ri-${this.layout}`];
-    const lqipClass = this.args.src.lqip?.class;
-    if (lqipClass && !this.isLoaded) {
-      classNames.push(getValueOrCallback(lqipClass));
-    }
-
-    return classNames.join(' ');
+    return resolveClassNames({
+      src: this.args.src,
+      isLoaded: this.isLoaded,
+      responsive: this.responsive,
+      customClass: undefined,
+    }).join(' ');
   }
 
   get styles(): Record<string, string | undefined> {
-    if (this.isLoaded) return {};
-
-    return getValueOrCallback(this.args.src.lqip?.inlineStyles) ?? {};
+    return resolveStyles(this.args.src, this.isLoaded, false) ?? {};
   }
 
   get keyedSrcArray(): [unknown] {
