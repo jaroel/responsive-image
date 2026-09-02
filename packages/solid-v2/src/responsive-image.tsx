@@ -1,10 +1,20 @@
-import { env, getValueOrCallback } from '@responsive-image/core';
+import {
+  env,
+  isResponsiveLayout,
+  resolveClassNames,
+  resolveHeight,
+  resolveSources,
+  resolveSrc,
+  resolveStyles,
+  resolveWidth,
+  sourcesSorted as sortSources,
+  type ImageData,
+} from '@responsive-image/core';
 import { isServer, type JSX } from '@solidjs/web';
 import { createSignal, omit, onSettled, Show } from 'solid-js';
 
 import './responsive-image.css';
 
-import type { ImageData, ImageUrlForType } from '@responsive-image/core';
 import type { Component } from 'solid-js';
 
 export interface ResponsiveImageArgs {
@@ -30,143 +40,52 @@ export type ResponsiveImageProps = Omit<
 > &
   ResponsiveImageArgs;
 
-interface ImageSource {
-  srcset: string;
-  type: ImageUrlForType;
-  mimeType: string | undefined;
-  sizes?: string | undefined;
-}
-
-const PIXEL_DENSITIES = [1, 2];
-
-// determines the order of sources, prefereing next-gen formats over legacy
-const typeScore = new Map<ImageUrlForType, number>([
-  ['png', 1],
-  ['jpeg', 1],
-  ['webp', 2],
-  ['avif', 3],
-]);
-
 export const ResponsiveImage: Component<ResponsiveImageProps> = (props) => {
   const [loadedSrc, setLoaded] = createSignal<ImageData | undefined>(undefined);
   const attributes = omit(props, ...responsiveImageArgs);
-
   const isLoaded = () => loadedSrc() === props.src;
 
-  const isResponsiveLayout = () =>
-    props.width === undefined && props.height === undefined;
+  const responsive = () => isResponsiveLayout(props.width, props.height);
 
-  const width = () => {
-    if (isResponsiveLayout()) {
-      // With responsive layout, the width attribute does not really matter, as we scale to 100%.
-      // We just need to set width and height with the correct aspect ratio to preven layout shift.
-      return env.deviceWidths.at(-1);
-    } else {
-      if (props.width) {
-        return props.width;
-      } else {
-        const ar = props.src.aspectRatio;
-        if (ar !== undefined && ar !== 0 && props.height !== undefined) {
-          return props.height * ar;
-        }
-      }
-    }
+  const width = () =>
+    resolveWidth({
+      width: props.width,
+      height: props.height,
+      aspectRatio: props.src.aspectRatio,
+      deviceWidths: env.deviceWidths,
+      responsive: responsive(),
+    });
 
-    return undefined;
-  };
+  const height = () =>
+    resolveHeight({
+      height: props.height,
+      aspectRatio: props.src.aspectRatio,
+      width: width(),
+    });
 
-  const height = () => {
-    if (props.height) {
-      return props.height;
-    }
+  const imgSrc = () => resolveSrc({ src: props.src, width: width() });
 
-    const ar = props.src.aspectRatio;
-    const w = width();
-    if (ar !== undefined && ar !== 0 && w !== undefined) {
-      return Math.round(w / ar);
-    }
+  const sources = () =>
+    resolveSources({
+      src: props.src,
+      width: width(),
+      sizes: props.sizes,
+      size: props.size,
+      deviceWidths: env.deviceWidths,
+      responsive: responsive(),
+    });
 
-    return undefined;
-  };
+  const sourcesSorted = () => sortSources(sources());
 
-  const imgSrc = () => {
-    const format = props.src.imageTypes === 'auto' ? 'auto' : undefined;
-    return props.src.imageUrlFor(width() ?? 640, format);
-  };
+  const classNames = () =>
+    resolveClassNames({
+      src: props.src,
+      isLoaded: isLoaded(),
+      responsive: responsive(),
+      customClass: props['class'] as string,
+    });
 
-  const sources = (): ImageSource[] => {
-    const imageTypes = Array.isArray(props.src.imageTypes)
-      ? props.src.imageTypes
-      : [props.src.imageTypes];
-
-    if (isResponsiveLayout()) {
-      return imageTypes.map((type) => {
-        let widths = props.src.availableWidths;
-        if (!widths) {
-          widths = env.deviceWidths;
-        }
-        const sources: string[] = widths.map((width) => {
-          const url = props.src.imageUrlFor(width, type);
-          return `${url} ${width}w`;
-        });
-
-        return {
-          srcset: sources.join(', '),
-          sizes: props.sizes ?? (props.size ? `${props.size}vw` : undefined),
-          type,
-          mimeType: type != 'auto' ? `image/${type}` : undefined,
-        };
-      });
-    } else {
-      const w = width();
-      if (w === undefined) {
-        return [];
-      } else {
-        return imageTypes.map((type) => {
-          const sources: string[] = PIXEL_DENSITIES.map((density) => {
-            const url = props.src.imageUrlFor(w * density, type)!;
-
-            return `${url} ${density}x`;
-          }).filter((source) => source !== undefined);
-
-          return {
-            srcset: sources.join(', '),
-            type,
-            mimeType: type != 'auto' ? `image/${type}` : undefined,
-          };
-        });
-      }
-    }
-  };
-
-  const sourcesSorted = () =>
-    sources().sort(
-      (a, b) => (typeScore.get(b.type) ?? 0) - (typeScore.get(a.type) ?? 0),
-    );
-
-  const classNames = () => {
-    const classNames = [
-      'ri-img',
-      `ri-${isResponsiveLayout() ? 'responsive' : 'fixed'}`,
-    ];
-    const lqipClass = props.src.lqip?.class;
-    if (lqipClass && !isLoaded()) {
-      classNames.push(getValueOrCallback(lqipClass));
-    }
-    if (props['class']) {
-      classNames.push(props['class'] as string);
-    }
-
-    return classNames;
-  };
-
-  const styles = () => {
-    if (isLoaded() || isServer) {
-      return undefined;
-    }
-
-    return getValueOrCallback(props.src.lqip?.inlineStyles);
-  };
+  const styles = () => resolveStyles(props.src, isLoaded(), isServer);
 
   // check if src is already loaded (SSR) and update state so LQIP options are removed
   // eslint-disable-next-line no-unassigned-vars --  false positive
